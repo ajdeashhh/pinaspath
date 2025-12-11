@@ -3,3 +3,4 @@ pandas
 networkx
 folium
 streamlit-folium
+requests
