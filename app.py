@@ -1,5 +1,6 @@
 # app.py
-# PinasPath — Autocomplete with visible clickable suggestions + dynamic stops + route ETA
+# PinasPath — Autocomplete with robust Nominatim (retries/backoff) + optional Google Places
+# Includes dynamic-stop route planning (Overpass) and ETA
 # Run: streamlit run app.py
 # Requirements: streamlit, pandas, networkx, folium, streamlit-folium, requests
 
@@ -14,39 +15,86 @@ from streamlit_folium import st_folium
 import folium
 from datetime import datetime, timedelta
 
-st.set_page_config(page_title="PinasPath — Autocomplete (buttons)", layout="wide")
-st.title("PinasPath — Autocomplete & Route Recommendation")
-st.write("Type an address (3+ chars) — suggestions appear below as buttons. Click a suggestion to select it. Then Plan route.")
+st.set_page_config(page_title="PinasPath — Robust Autocomplete", layout="wide")
+st.title("PinasPath — Autocomplete + Route Recommendation (robust)")
 
-# ---------- helpers ----------
+# ---------------- Utilities ----------------
 def haversine(lat1, lon1, lat2, lon2):
     R = 6371.0
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
+    phi1 = math.radians(lat1); phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1); dlambda = math.radians(lon2 - lon1)
     a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
     return R * 2 * math.asin(math.sqrt(a))
 
+# ---------- Robust Nominatim (retries + backoff) ----------
 @st.cache_data(ttl=300)
-def nominatim_suggest(q, limit=6):
+def nominatim_suggest_resilient(q, limit=6, max_retries=3, timeout=15):
     if not q or len(q.strip()) < 3:
         return []
     url = "https://nominatim.openstreetmap.org/search"
     params = {"q": q, "format": "json", "limit": limit, "addressdetails": 0}
-    headers = {"User-Agent": "PinasPathPrototype/1.0 (youremail@example.com)"}
-    try:
-        r = requests.get(url, params=params, headers=headers, timeout=8)
-        if r.status_code == 200:
-            data = r.json()
-            time.sleep(0.35)  # polite pause
-            return [{"display_name": it.get("display_name"),
-                     "lat": float(it.get("lat")), "lon": float(it.get("lon"))}
-                    for it in data]
-    except Exception as e:
-        st.warning(f"Nominatim error: {e}")
+    headers = {"User-Agent": "PinasPathPrototype/1.0 (contact@example.com)"}
+    backoff = 0.6
+    for attempt in range(1, max_retries + 1):
+        try:
+            r = requests.get(url, params=params, headers=headers, timeout=timeout)
+            if r.status_code == 200:
+                data = r.json()
+                # minimal polite wait but not blocking heavy
+                time.sleep(0.15)
+                out = [{"display_name": it.get("display_name"), "lat": float(it.get("lat")), "lon": float(it.get("lon"))} for it in data]
+                return out
+            else:
+                # Non-200: wait & retry
+                time.sleep(backoff)
+                backoff *= 2
+        except requests.exceptions.RequestException as e:
+            # network error or timeout, backoff and retry
+            if attempt == max_retries:
+                # last attempt failed — return empty and let caller handle message
+                return []
+            time.sleep(backoff)
+            backoff *= 2
     return []
 
+# ---------- Google Places suggestion (optional) ----------
+# If user enters an API key, the app will use Google Places for autocomplete suggestions.
+# You must enable Places API, and optionally Places Details for geometry.
+@st.cache_data(ttl=300)
+def google_places_suggest(q, api_key, limit=6):
+    if not q or len(q.strip()) < 1 or not api_key:
+        return []
+    try:
+        # Autocomplete endpoint
+        url = "https://maps.googleapis.com/maps/api/place/autocomplete/json"
+        params = {"input": q, "key": api_key, "types": "geocode", "components": ""}  # components can be used for country filter
+        resp = requests.get(url, params=params, timeout=8)
+        resp.raise_for_status()
+        preds = resp.json().get("predictions", [])[:limit]
+        results = []
+        # For each prediction, request place details to get geometry
+        for p in preds:
+            pid = p.get("place_id")
+            # Place details
+            durl = "https://maps.googleapis.com/maps/api/place/details/json"
+            dparams = {"place_id": pid, "key": api_key, "fields": "geometry,name,formatted_address"}
+            dresp = requests.get(durl, params=dparams, timeout=8)
+            dresp.raise_for_status()
+            pdict = dresp.json().get("result", {})
+            geom = pdict.get("geometry", {}).get("location")
+            if geom:
+                results.append({
+                    "display_name": pdict.get("formatted_address") or pdict.get("name"),
+                    "lat": float(geom["lat"]),
+                    "lon": float(geom["lng"])
+                })
+            # be polite to Google too (very small)
+            time.sleep(0.05)
+        return results
+    except Exception:
+        return []
+
+# ---------- Overpass fetch (same as before) ----------
 def overpass_fetch_stops_and_routes(lat, lon, radius_m=2000):
     overpass_url = "https://overpass-api.de/api/interpreter"
     node_q = (
@@ -92,6 +140,7 @@ def overpass_fetch_stops_and_routes(lat, lon, radius_m=2000):
         st.warning(f"Overpass error: {e}")
     return nodes, relations
 
+# ---------- Graph builders & pathfinder (same) ----------
 def build_graph_from_osm(nodes, relations, walking_threshold_km=0.6):
     G = nx.DiGraph()
     for nid, nd in nodes.items():
@@ -157,40 +206,57 @@ def find_fastest_route(G, origin_stop, dest_stop, transfer_penalty=2.0):
             heapq.heappush(pq, (new_cost, nbr, mode, route, new_path, new_legs))
     return None
 
-# ---------- UI: inputs & visible suggestions ----------
+# ---------------- UI ----------------
 col1, col2 = st.columns([1, 2])
 with col1:
-    st.header("Enter addresses (suggestions appear below)")
+    st.header("Inputs: autocomplete (3+ chars)")
+    st.info("Tip: provide a Google Places API key in the sidebar to use Google's autocomplete (recommended for heavy/reliable use).")
 
-    # ORIGIN
-    origin_text = st.text_input("Origin (type 3+ characters)", key="origin_text")
-    origin_suggestions = nominatim_suggest(origin_text, limit=6) if origin_text and len(origin_text.strip())>=3 else []
-    if origin_suggestions:
-        st.markdown("**Origin suggestions — click to choose**")
-        for i, s in enumerate(origin_suggestions):
-            label = f"{s['display_name']}  — ({s['lat']:.6f}, {s['lon']:.6f})"
-            if st.button(label, key=f"orig_btn_{i}"):
-                st.session_state["origin_choice"] = s
-                st.success("Origin selected")
+    origin_text = st.text_input("Origin", key="origin_text")
+    dest_text = st.text_input("Destination", key="dest_text")
+
+    # Google API key (optional)
+    google_api_key = st.text_input("Google Places API key (optional)", type="password")
+    use_google = bool(google_api_key and len(google_api_key.strip())>0)
+
+    # suggestions area
+    st.markdown("**Origin suggestions:**")
+    origin_suggestions = []
+    if origin_text and len(origin_text.strip())>=3:
+        if use_google:
+            origin_suggestions = google_places_suggest(origin_text, google_api_key, limit=6)
+        else:
+            origin_suggestions = nominatim_suggest_resilient(origin_text, limit=6)
+            if origin_suggestions == []:
+                st.warning("Nominatim timed out or returned no results. Try again or provide a Google API key in the sidebar.")
+    # clickable buttons for origin suggestions
+    for i, s in enumerate(origin_suggestions):
+        label = f"{s['display_name']}"
+        if st.button(label, key=f"orig_btn_{i}"):
+            st.session_state["origin_choice"] = s
+            st.success("Origin selected from suggestions")
     if st.session_state.get("origin_choice"):
         oc = st.session_state["origin_choice"]
-        st.markdown(f"**Chosen origin:** {oc['display_name']}  \n(lat: {oc['lat']:.6f}, lon: {oc['lon']:.6f})")
+        st.markdown(f"Chosen origin: **{oc['display_name']}** — ({oc['lat']:.6f}, {oc['lon']:.6f})")
 
-    st.write("---")
-
-    # DESTINATION
-    dest_text = st.text_input("Destination (type 3+ characters)", key="dest_text")
-    dest_suggestions = nominatim_suggest(dest_text, limit=6) if dest_text and len(dest_text.strip())>=3 else []
-    if dest_suggestions:
-        st.markdown("**Destination suggestions — click to choose**")
-        for i, s in enumerate(dest_suggestions):
-            label = f"{s['display_name']}  — ({s['lat']:.6f}, {s['lon']:.6f})"
-            if st.button(label, key=f"dest_btn_{i}"):
-                st.session_state["dest_choice"] = s
-                st.success("Destination selected")
+    st.markdown("---")
+    st.markdown("**Destination suggestions:**")
+    dest_suggestions = []
+    if dest_text and len(dest_text.strip())>=3:
+        if use_google:
+            dest_suggestions = google_places_suggest(dest_text, google_api_key, limit=6)
+        else:
+            dest_suggestions = nominatim_suggest_resilient(dest_text, limit=6)
+            if dest_suggestions == []:
+                st.warning("Nominatim timed out or returned no results for destination. Try again or provide a Google API key.")
+    for i, s in enumerate(dest_suggestions):
+        label = f"{s['display_name']}"
+        if st.button(label, key=f"dest_btn_{i}"):
+            st.session_state["dest_choice"] = s
+            st.success("Destination selected from suggestions")
     if st.session_state.get("dest_choice"):
         dc = st.session_state["dest_choice"]
-        st.markdown(f"**Chosen destination:** {dc['display_name']}  \n(lat: {dc['lat']:.6f}, lon: {dc['lon']:.6f})")
+        st.markdown(f"Chosen destination: **{dc['display_name']}** — ({dc['lat']:.6f}, {dc['lon']:.6f})")
 
     st.write("---")
     radius_km = st.number_input("Stops search radius (km)", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
@@ -198,28 +264,25 @@ with col1:
     plan_btn = st.button("Plan route")
 
 with col2:
-    st.header("Map & Results")
+    st.header("Map & Result")
     map_placeholder = st.empty()
 
-# ---------- Plan route ----------
+# Plan button action
 if plan_btn:
     if not st.session_state.get("origin_choice") or not st.session_state.get("dest_choice"):
-        st.error("Please click a suggestion for both origin and destination before planning.")
+        st.error("Select suggestions for both origin and destination before planning.")
     else:
-        origin = st.session_state["origin_choice"]
-        dest = st.session_state["dest_choice"]
-        ox, oy = origin["lat"], origin["lon"]
-        dx, dy = dest["lat"], dest["lon"]
-        center_lat = (ox + dx) / 2.0
-        center_lon = (oy + dy) / 2.0
+        origin = st.session_state["origin_choice"]; dest = st.session_state["dest_choice"]
+        ox, oy = origin["lat"], origin["lon"]; dx, dy = dest["lat"], dest["lon"]
+        center_lat = (ox + dx) / 2.0; center_lon = (oy + dy) / 2.0
 
-        st.info("Fetching nearby stops & building graph (OSM Overpass)...")
+        st.info("Fetching nearby stops (Overpass) and building route graph...")
         nodes, relations = overpass_fetch_stops_and_routes(center_lat, center_lon, radius_m=int(radius_km*1000))
         if not nodes:
-            st.error("No nearby stops found. Increase radius or try a different area.")
+            st.error("No stops found in area. Increase radius or try a different area.")
         else:
-            G, transit_edges_count = build_graph_from_osm(nodes, relations, walking_threshold_km=0.6)
-            st.success(f"Graph ready — {len(G.nodes)} stops, transit edges ≈ {transit_edges_count}.")
+            G, transit_count = build_graph_from_osm(nodes, relations, walking_threshold_km=0.6)
+            st.success(f"Graph built — {len(G.nodes)} stops, transit edges ≈ {transit_count}.")
 
             # nearest stops
             stops_df = pd.DataFrame([{"stop_id": nid, "lat": nd["lat"], "lon": nd["lon"], "name": nd["tags"].get("name") or nd["tags"].get("ref") or f"stop_{nid}"} for nid, nd in nodes.items()])
@@ -227,17 +290,15 @@ if plan_btn:
             stops_df["dist_d"] = stops_df.apply(lambda r: haversine(dx, dy, float(r["lat"]), float(r["lon"])), axis=1)
             origin_row = stops_df.loc[stops_df["dist_o"].idxmin()]
             dest_row = stops_df.loc[stops_df["dist_d"].idxmin()]
-            o_stop = str(int(origin_row["stop_id"]))
-            d_stop = str(int(dest_row["stop_id"]))
-            walk_o_min = (origin_row["dist_o"] / 5.0) * 60.0
-            walk_d_min = (dest_row["dist_d"] / 5.0) * 60.0
+            o_stop = str(int(origin_row["stop_id"])); d_stop = str(int(dest_row["stop_id"]))
+            walk_o_min = (origin_row["dist_o"] / 5.0) * 60.0; walk_d_min = (dest_row["dist_d"] / 5.0) * 60.0
 
             st.write(f"Nearest origin stop: **{origin_row['name']}** — {origin_row['dist_o']*1000:.0f} m (walk ≈ {walk_o_min:.1f} min)")
             st.write(f"Nearest dest stop: **{dest_row['name']}** — {dest_row['dist_d']*1000:.0f} m (walk ≈ {walk_d_min:.1f} min)")
 
             res = find_fastest_route(G, o_stop, d_stop, transfer_penalty=float(transfer_penalty))
             if not res:
-                st.error("No transit path found. The app may still show walking connections between stops.")
+                st.error("No transit path found between nearest stops.")
             else:
                 total_transit = sum([leg["travel_time"] for leg in res["legs"] if leg["mode"] != "walk"])
                 total_walk_internal = sum([leg["travel_time"] for leg in res["legs"] if leg["mode"] == "walk"])
@@ -249,31 +310,29 @@ if plan_btn:
                 eta = datetime.now() + timedelta(minutes=estimated_total_min)
                 st.markdown(f"**ETA:** {eta.strftime('%Y-%m-%d %H:%M:%S')}")
 
-                st.markdown("### Legs")
-                st.write(f"1. Walk from origin input to stop **{origin_row['name']}** — ≈ {walk_o_min:.1f} min")
+                st.markdown("### Legs (walk + transit)")
+                st.write(f"1. Walk: origin input → {origin_row['name']} — ≈ {walk_o_min:.1f} min")
                 idx = 2
                 for leg in res["legs"]:
-                    from_name = G.nodes[leg["from"]]["name"]
-                    to_name = G.nodes[leg["to"]]["name"]
+                    from_name = G.nodes[leg["from"]]["name"]; to_name = G.nodes[leg["to"]]["name"]
                     if leg["mode"] == "walk":
                         st.write(f"{idx}. Walk: {from_name} → {to_name} — {leg['travel_time']:.1f} min")
                     else:
                         st.write(f"{idx}. {leg['mode'].title()}: {from_name} → {to_name} — {leg['route']} — {leg['travel_time']:.1f} min" + (f" + {leg['penalty']:.1f} min transfer" if leg['penalty']>0 else ""))
                     idx += 1
-                st.write(f"{idx}. Walk from stop **{dest_row['name']}** to destination input — ≈ {walk_d_min:.1f} min")
+                st.write(f"{idx}. Walk: {dest_row['name']} → destination input — ≈ {walk_d_min:.1f} min")
 
                 # map
                 m = folium.Map(location=[center_lat, center_lon], zoom_start=13)
-                folium.Marker(location=(ox, oy), popup="Origin (selected)", icon=folium.Icon(color="blue")).add_to(m)
-                folium.Marker(location=(dx, dy), popup="Destination (selected)", icon=folium.Icon(color="red")).add_to(m)
+                folium.Marker(location=(ox, oy), popup="Origin", icon=folium.Icon(color="blue")).add_to(m)
+                folium.Marker(location=(dx, dy), popup="Destination", icon=folium.Icon(color="red")).add_to(m)
                 for _, r in stops_df.iterrows():
                     folium.CircleMarker(location=(float(r["lat"]), float(r["lon"])), radius=2, color="#666", fill=True, fill_opacity=0.5).add_to(m)
                 folium.Marker(location=(float(origin_row["lat"]), float(origin_row["lon"])), popup=f"Origin stop: {origin_row['name']}", icon=folium.Icon(color="green")).add_to(m)
                 folium.Marker(location=(float(dest_row["lat"]), float(dest_row["lon"])), popup=f"Dest stop: {dest_row['name']}", icon=folium.Icon(color="green")).add_to(m)
                 coords = []
                 for leg in res["legs"]:
-                    node = G.nodes[leg["from"]]
-                    coords.append((node["lat"], node["lon"]))
+                    node = G.nodes[leg["from"]]; coords.append((node["lat"], node["lon"]))
                 coords.append((G.nodes[res["path"][-1]]["lat"], G.nodes[res["path"][-1]]["lon"]))
                 folium.PolyLine(coords, color="green", weight=5, opacity=0.8).add_to(m)
                 folium.PolyLine([(ox, oy), (float(origin_row["lat"]), float(origin_row["lon"]))], color="blue", weight=3, dash_array="5,8").add_to(m)
@@ -282,4 +341,4 @@ if plan_btn:
                 map_placeholder.write(st_folium(m, width=900, height=600))
 
 st.markdown("---")
-st.caption("Autocomplete: Nominatim (OpenStreetMap). Stops & routes inferred from Overpass. For production use switch to Google Places + official GTFS + routing engine.")
+st.caption("Autocomplete uses Nominatim (resilient) or Google Places (optional). Overpass fetches stops. For production-grade, use Google Places + routing engine + GTFS.")
