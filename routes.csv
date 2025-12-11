@@ -1,0 +1,9 @@
+from_stop,to_stop,travel_time,mode,route_name
+S1,S2,25,train,Line1
+S2,S3,12,bus,B5
+S3,S4,30,bus,B7
+S1,S5,20,jeepney,J1
+S5,S6,8,jeepney,J2
+S6,S4,22,bus,B9
+S2,S5,18,bus,B3
+S3,S6,10,bus,B11
