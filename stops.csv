@@ -5,3 +5,59 @@ S3,EDSA,14.5566,121.0250
 S4,Taft Ave,14.5383,120.9967
 S5,Quiapo,14.5995,120.9822
 S6,Divisoria,14.6042,120.9739
+# --- ADDITIONAL STOPS: LRT-1, MRT-3, LRT-2 and connectors (approx lat/lon) ---
+L1_Baclaran,Baclaran,14.5316,120.9989
+L1_EDSA,EDSA (LRT-1),14.5375,120.9994
+L1_Libertad,Libertad,14.5388,120.9998
+L1_Gil_Puyat,Gil Puyat,14.5521,120.9959
+L1_Vito_Cruz,Vito Cruz,14.5513,120.9951
+L1_Quirino,Quirino,14.5490,120.9940
+L1_Pedro_Gil,Pedro Gil,14.5596,120.9847
+L1_UN_AVE,U.N. Avenue,14.5580,120.9850
+L1_Central_Terminal,Central Terminal,14.6014,120.9772
+L1_Carriedo,Carriedo,14.6011,120.9796
+L1_Doroteo_Jose,Doroteo Jose,14.5998,120.9821
+L1_Bambang,Bambang,14.6079,120.9870
+L1_Tayuman,Tayuman,14.6070,120.9842
+L1_Blumentritt,Blumentritt,14.6112,120.9753
+L1_Abad_Santos,Abad Santos,14.6231,120.9756
+L1_R_Papa,R. Papa,14.6272,120.9809
+L1_5th_Ave,5th Avenue,14.6427,120.9858
+L1_Monumento,Monumento,14.6541,120.9833
+L1_Balintawak,Balintawak,14.6516,120.9869
+L1_Roosevelt,Roosevelt,14.6768,120.9754
+
+M3_NorthAve,North Avenue,14.6573,121.0307
+M3_QuezonAve,Quezon Avenue,14.6345,121.0357
+M3_GMA_Kamuning,GMA-Kamuning,14.6236,121.0574
+M3_Araneta_Cubao,Araneta-Cubao,14.6197,121.0436
+M3_Santolan_Annapolis,Santolan-Annapolis,14.5940,121.0494
+M3_Ortigas,Ortigas,14.5764,121.0611
+M3_Shaw,Shaw Blvd,14.5835,121.0553
+M3_Boni,Boni,14.5716,121.0486
+M3_Guadalupe,Guadalupe,14.5572,121.0464
+M3_Buendia,Buendia,14.5542,121.0441
+M3_Ayala,Ayala,14.5547,121.0244
+M3_Magallanes,Magallanes,14.5532,121.0288
+M3_Taft_Ave,Taft Avenue,14.5383,120.9967
+
+L2_Recto,Recto,14.6036,120.9970
+L2_Legarda,Legarda,14.5970,120.9999
+L2_Pureza,Pureza,14.5915,121.0145
+L2_VMapa,V. Mapa,14.5832,121.0156
+L2_JR_Jruiz,J. Ruiz,14.5754,121.0296
+L2_Gilmore,Gilmore,14.5862,121.0382
+L2_Betty,Betty Go-Belmonte,14.5990,121.0345
+L2_Araneta_Cubao,LRT-2 Araneta-Cubao,14.6197,121.0436
+L2_Anonas,Anonas,14.6374,121.0522
+L2_Katipunan,Katipunan,14.6482,121.0731
+L2_Santolan,Santolan,14.6060,121.0825
+L2_Marikina,Marikina,14.6420,121.1000
+L2_Antipolo,Antipolo,14.5880,121.1684
+
+S_Monumento,Monumento (local),14.6541,120.9833
+S_Cubao,Cubao (hub),14.6197,121.0436
+S_EDSA,EDSA (MRT hub),14.5570,121.0250
+S_Taft,Taft Ave (local),14.5383,120.9967
+S_Quiapo,Quiapo (church area),14.5995,120.9822
+S_Divisoria,Divisoria (Tutuban/Recto),14.6042,120.9739
