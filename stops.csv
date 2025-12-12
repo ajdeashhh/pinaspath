@@ -1,7 +1,60 @@
 stop_id,stop_name,lat,lon
-S1,Monumento,14.6541,120.9833
-S2,Cubao,14.6197,121.0436
-S3,EDSA,14.5566,121.0250
-S4,Taft Ave,14.5383,120.9967
-S5,Quiapo,14.5995,120.9822
-S6,Divisoria,14.6042,120.9739
+# LRT-1 (Line1) - South to North
+L1_Baclaran,Baclaran,,
+L1_EDSA,EDSA (LRT-1),,
+L1_Libertad,Libertad,,
+L1_Gil_Puyat,Gil Puyat,,
+L1_Vito_Cruz,Vito Cruz,,
+L1_Quirino,Quirino,,
+L1_Pedro_Gil,Pedro Gil,,
+L1_UN_AVE,U.N. Avenue,,
+L1_Central_Terminal,Central Terminal,,
+L1_Carriedo,Carriedo,,
+L1_Doroteo_Jose,Doroteo Jose,,
+L1_Bambang,Bambang,,
+L1_Tayuman,Tayuman,,
+L1_Blumentritt,Blumentritt,,
+L1_Abad_Santos,Abad Santos,,
+L1_R_Papa,R. Papa,,
+L1_5th_Ave,5th Avenue,,
+L1_Monumento,Monumento,,
+L1_Balintawak,Balintawak,,
+L1_Roosevelt,Roosevelt,,
+
+# MRT-3 (North-South)
+M3_NorthAve,North Avenue,,
+M3_QuezonAve,Quezon Avenue,,
+M3_GMA_Kamuning,GMA-Kamuning,,
+M3_Araneta_Cubao,Araneta-Cubao,,
+M3_Santolan_Annapolis,Santolan-Annapolis,,
+M3_Ortigas,Ortigas,,
+M3_Shaw,Shaw Blvd,,
+M3_Boni,Boni,,
+M3_Guadalupe,Guadalupe,,
+M3_Buendia,Buendia,,
+M3_Ayala,Ayala,,
+M3_Magallanes,Magallanes,,
+M3_Taft_Ave,Taft Avenue,,
+
+# LRT-2 (West-East)
+L2_Recto,Recto,,
+L2_Legarda,Legarda,,
+L2_Pureza,Pureza,,
+L2_VMapa,V. Mapa,,
+L2_JR_Jruiz,J. Ruiz,,
+L2_Gilmore,Gilmore,,
+L2_Betty,Betty Go-Belmonte,,
+L2_Araneta_Cubao,LRT-2 Araneta-Cubao,,
+L2_Anonas,Anonas,,
+L2_Katipunan,Katipunan,,
+L2_Santolan,Santolan,,
+L2_Marikina,Marikina,,
+L2_Antipolo,Antipolo,,
+
+# Key local places (connectors)
+S_Monumento,Monumento (local),,
+S_Cubao,Cubao (hub),,
+S_EDSA,EDSA (MRT hub),,
+S_Taft,Taft Ave (LRT3 interchange),,
+S_Quiapo,Quiapo (church area),,
+S_Divisoria,Divisoria (Tutuban/Recto hub),,
