@@ -1,4 +1,4 @@
-# app_full.py — PinasPath full (rail topology + connectors, exact ride instructions)
+# app.py — PinasPath full (rail topology + connectors, exact ride instructions)
 import streamlit as st
 import pandas as pd
 import networkx as nx
@@ -14,7 +14,7 @@ st.markdown("This prototype uses built-in LRT-1, MRT-3, and LRT-2 station topolo
 
 # ---------------- Load CSVs ----------------
 @st.cache_data
-def load_data(stops_path="stops_full.csv", routes_path="routes_full.csv"):
+def load_data(stops_path="stops.csv", routes_path="routes.csv"):
     if not os.path.exists(stops_path):
         raise FileNotFoundError(stops_path + " missing.")
     if not os.path.exists(routes_path):
@@ -202,7 +202,7 @@ with col_text:
                         _ = st_folium(fmap, width=700, height=600)
                 else:
                     with col_map:
-                        st.info("No coordinates for stations — map disabled. Provide lat/lon in stops_full.csv to enable map.")
+                        st.info("No coordinates for stations — map disabled. Provide lat/lon in stops.csv to enable map.")
     else:
         st.info("Click 'Plan route' to get exact ride instructions and sakay count.")
 
@@ -229,6 +229,6 @@ if compute_all:
             else:
                 records.append({"origin": a, "destination": b, "total_time_min": None, "sakay_count": None, "route_sequence": None, "path_nodes": None})
     outdf = pd.DataFrame(records)
-    outpath = "all_od_routes_full.csv"
+    outpath = "all_od_routes.csv"
     outdf.to_csv(outpath, index=False)
     st.sidebar.success(f"All OD computed and saved to {outpath} (download from your project folder).")
