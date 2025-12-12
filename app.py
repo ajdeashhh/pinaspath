@@ -1,8 +1,9 @@
-# app.py — Full PinasPath app (safe map rendering, ignores commented CSV lines)
+# app.py — Full PinasPath app (auto-bidir + walking connectors, safe parsing)
 import streamlit as st
 import pandas as pd
 import networkx as nx
 import heapq
+import math
 from datetime import datetime, timedelta
 from streamlit_folium import st_folium
 import folium
@@ -99,19 +100,38 @@ def name_to_id(name):
 origin_id = name_to_id(origin_name)
 destination_id = name_to_id(destination_name)
 
-def build_graph(stops_df, routes_df, auto_bidirectional=False):
+# Haversine helper
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    phi1 = math.radians(lat1); phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1); dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2.0)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2.0)**2
+    return 2 * R * math.asin(math.sqrt(a))
+
+# --- Graph builder + auto-fixes: ensure bidirectional + add walking connectors ---
+def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700):
+    """
+    Build directed graph from CSVs, automatically:
+      - adds reverse edges for any directed edge if reverse missing
+      - optionally adds walking edges between stops within walk_thresh_m meters
+    Returns: networkx.DiGraph
+    """
     G = nx.DiGraph()
+    # add nodes
     for _, r in stops_df.iterrows():
         sid = str(r["stop_id"])
-        # set safe lat/lon as float if present
-        lat = float(r["lat"]) if pd.notna(r["lat"]) else None
-        lon = float(r["lon"]) if pd.notna(r["lon"]) else None
+        lat = float(r["lat"]) if pd.notna(r["lat"]) and r["lat"] != "" else None
+        lon = float(r["lon"]) if pd.notna(r["lon"]) and r["lon"] != "" else None
         G.add_node(sid, name=r["stop_name"], lat=lat, lon=lon)
+    # add edges from routes_df
     for _, r in routes_df.iterrows():
         u = str(r["from_stop"]); v = str(r["to_stop"])
-        w = float(r["travel_time"])
-        mode = r.get("mode", "") if r.get("mode", "") is not None else ""
-        rn = r.get("route_name", "") if r.get("route_name", "") is not None else ""
+        try:
+            w = float(r["travel_time"])
+        except Exception:
+            w = 1.0
+        mode = r.get("mode","") or ""
+        rn = r.get("route_name","") or ""
         if G.has_edge(u, v):
             existing = G[u][v]
             if w < existing.get("travel_time", float("inf")):
@@ -122,13 +142,46 @@ def build_graph(stops_df, routes_df, auto_bidirectional=False):
             existing["route_names"] = routes_list
         else:
             G.add_edge(u, v, travel_time=w, route_names=[{"route_name": rn, "mode": mode}])
-        if auto_bidirectional and not G.has_edge(v, u):
-            G.add_edge(v, u, travel_time=w, route_names=[{"route_name": rn, "mode": mode}])
+    # Ensure bidirectional: add reverse edge if missing
+    edges_to_add = []
+    for u, v, data in list(G.edges(data=True)):
+        if not G.has_edge(v, u):
+            edges_to_add.append((v, u, {"travel_time": data.get("travel_time", 1.0), "route_names": data.get("route_names", [])}))
+    for (a,b,attrs) in edges_to_add:
+        G.add_edge(a, b, **attrs)
+    # Add walking connectors between geographically close stops
+    if add_walk_links:
+        coords = []
+        for n, d in G.nodes(data=True):
+            if d.get("lat") is not None and d.get("lon") is not None:
+                coords.append((n, float(d["lat"]), float(d["lon"])))
+        n_coords = len(coords)
+        th_km = walk_thresh_m / 1000.0
+        for i in range(n_coords):
+            id1, lat1, lon1 = coords[i]
+            for j in range(i+1, n_coords):
+                id2, lat2, lon2 = coords[j]
+                dist_km = haversine_km(lat1, lon1, lat2, lon2)
+                if dist_km <= th_km:
+                    walk_time_min = max(1.0, (dist_km * 1000) / 80.0)
+                    if not G.has_edge(id1, id2):
+                        G.add_edge(id1, id2, travel_time=walk_time_min, route_names=[{"route_name":"walk","mode":"walk"}])
+                    if not G.has_edge(id2, id1):
+                        G.add_edge(id2, id1, travel_time=walk_time_min, route_names=[{"route_name":"walk","mode":"walk"}])
     return G
 
-# build graph (do not auto-add reverse edges because you appended both directions earlier)
-G = build_graph(stops, routes, auto_bidirectional=False)
+# Build the graph using the safer builder (tweak walk_thresh_m if desired)
+G = build_full_graph(stops, routes, add_walk_links=True, walk_thresh_m=700)
 
+# quick diagnostics in sidebar: isolated nodes and components
+isolated = [n for n in G.nodes() if G.out_degree(n)==0 and G.in_degree(n)==0]
+if isolated:
+    st.sidebar.warning(f"{len(isolated)} isolated stop(s): {', '.join(isolated[:10])} (showing up to 10).")
+und = G.to_undirected()
+cc_count = nx.number_connected_components(und)
+st.sidebar.info(f"Network components (undirected): {cc_count}")
+
+# shortest path with transfer penalty
 def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty=0):
     pq = []
     heapq.heappush(pq, (0.0, origin, None, None, [origin], []))
@@ -173,6 +226,23 @@ def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty
             }]
             heapq.heappush(pq, (new_cost, nbr, mode, route_name, new_path, new_legs))
     return None
+
+# compress contiguous legs into rides for nicer instructions
+def legs_to_instructions(legs):
+    if not legs:
+        return []
+    instr = []
+    cur = legs[0].copy()
+    for leg in legs[1:]:
+        if leg["mode"] == cur["mode"] and leg["route_name"] == cur["route_name"]:
+            cur["to_name"] = leg["to_name"]
+            cur["travel_time"] += leg["travel_time"]
+            cur["penalty"] += leg["penalty"]
+        else:
+            instr.append(cur)
+            cur = leg.copy()
+    instr.append(cur)
+    return instr
 
 # ----------------- UI layout: map left, details right -----------------
 left_col, right_col = st.columns([2, 1])
@@ -229,7 +299,6 @@ with left_col:
                 lat0 = float(valid_coords["lat"].mean())
                 lon0 = float(valid_coords["lon"].mean())
             else:
-                # can't show map
                 st.info("Route found but no coordinates available to render map.")
                 lat0 = None; lon0 = None
         if lat0 is not None and lon0 is not None and show_map:
@@ -285,6 +354,7 @@ with right_col:
             if not r:
                 st.error("No path found between selected stops.")
             else:
+                # store and trigger map refresh
                 st.session_state["last_result"] = r
                 st.rerun()
 
@@ -300,20 +370,22 @@ with right_col:
         st.write(f"**Legs travel:** {total_travel:.1f} min • **Transfer penalty total:** {total_penalty:.1f} min")
         st.write(f"**ETA (now + travel):** {eta.strftime('%Y-%m-%d %H:%M:%S')}")
         st.markdown("#### Steps")
-        for i, leg in enumerate(res["legs"], start=1):
+        # compress legs into ride instructions for better readability
+        instructions = legs_to_instructions(res["legs"])
+        for i, leg in enumerate(instructions, start=1):
             # pretty mode badge
             mode = (leg.get("mode") or "unknown").lower()
             badge_class = "mode-walk"
             if "train" in mode: badge_class = "mode-train"
             elif "bus" in mode: badge_class = "mode-bus"
             elif "jeep" in mode: badge_class = "mode-jeepney"
-            st.markdown(f"<div style='margin-bottom:6px;'><span class='mode-badge {badge_class}'>{leg.get('mode')}</span> <b>{leg.get('from_name')}</b> → <b>{leg.get('to_name')}</b><br>"
-                        f"<small>{leg.get('route_name')} • {leg.get('travel_time'):.1f} min"
-                        f"{' • +'+str(int(leg.get('penalty'))) + ' min transfer' if leg.get('penalty') and leg.get('penalty')>0 else ''}</small></div>", unsafe_allow_html=True)
+            st.markdown(
+                f"<div style='margin-bottom:6px;'><span class='mode-badge {badge_class}'>{leg.get('mode')}</span> <b>{leg.get('from_name')}</b> → <b>{leg.get('to_name')}</b><br>"
+                f"<small>{leg.get('route_name')} • {leg.get('travel_time'):.1f} min"
+                f"{' • +'+str(int(leg.get('penalty'))) + ' min transfer' if leg.get('penalty') and leg.get('penalty')>0 else ''}</small></div>",
+                unsafe_allow_html=True
+            )
     else:
         st.markdown("---")
         st.markdown("No route planned yet. Use the controls above to plan a trip.")
     st.markdown('</div>', unsafe_allow_html=True)
-
-# helpful note
-st.markdown("<small>Note: CSV comment lines starting with '#' are ignored. Ensure stops.csv contains numeric lat,lon for map rendering.</small>", unsafe_allow_html=True)
