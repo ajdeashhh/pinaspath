@@ -190,7 +190,7 @@ if st.session_state.get("last_result") and show_map:
                             radius=6,
                             popup=popup_html,
                             tooltip=node_data["name"]).add_to(m)
-    folium.PolyLine(coords, weight=6, color=\"green\", opacity=0.8).add_to(m)
+    folium.PolyLine(coords, weight=6, color="green", opacity=0.8).add_to(m)
     # draw the persistent map
     map_placeholder.write(st_folium(m, width=900, height=600))
 
