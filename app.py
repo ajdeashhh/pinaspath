@@ -286,8 +286,8 @@ with right_col:
                 st.error("No path found between selected stops.")
             else:
                 # store and trigger map refresh
-                st.session_state["last_result"] = r
-                st.experimental_rerun()
+            st.session_state["last_result"] = r
+            st.rerun()
 
     if st.session_state.get("last_result"):
         res = st.session_state["last_result"]
