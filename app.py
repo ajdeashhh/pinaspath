@@ -1,4 +1,4 @@
-# app.py
+# app.py (fixed: do not print st_folium return value)
 import streamlit as st
 import pandas as pd
 import networkx as nx
@@ -20,17 +20,14 @@ def load_data(stops_path="stops.csv", routes_path="routes.csv"):
         raise FileNotFoundError(f"{routes_path} not found.")
     stops = pd.read_csv(stops_path, dtype=str)
     routes = pd.read_csv(routes_path, dtype=str)
-    # convert numeric types
     stops["lat"] = stops["lat"].astype(float)
     stops["lon"] = stops["lon"].astype(float)
     routes["travel_time"] = routes["travel_time"].astype(float)
-    # ensure ID strings
     stops["stop_id"] = stops["stop_id"].astype(str)
     routes["from_stop"] = routes["from_stop"].astype(str)
     routes["to_stop"] = routes["to_stop"].astype(str)
     return stops, routes
 
-# Load CSVs
 try:
     stops, routes = load_data()
 except Exception as e:
@@ -63,10 +60,6 @@ origin_id = name_to_id(origin_name)
 destination_id = name_to_id(destination_name)
 
 def build_graph(stops_df, routes_df, auto_bidirectional=False):
-    """
-    Build directed graph from routes_df.
-    If auto_bidirectional=True, add reverse edges for every row too.
-    """
     G = nx.DiGraph()
     for _, r in stops_df.iterrows():
         G.add_node(str(r["stop_id"]), name=r["stop_name"], lat=float(r["lat"]), lon=float(r["lon"]))
@@ -75,7 +68,6 @@ def build_graph(stops_df, routes_df, auto_bidirectional=False):
         w = float(r["travel_time"])
         mode = r.get("mode", "")
         rn = r.get("route_name", "")
-        # if multiple parallel edges exist, store them inside route_names and keep min travel_time
         if G.has_edge(u, v):
             existing = G[u][v]
             if w < existing.get("travel_time", float("inf")):
@@ -86,12 +78,11 @@ def build_graph(stops_df, routes_df, auto_bidirectional=False):
             existing["route_names"] = routes_list
         else:
             G.add_edge(u, v, travel_time=w, route_names=[{"route_name": rn, "mode": mode}])
-        if auto_bidirectional:
-            if not G.has_edge(v, u):
-                G.add_edge(v, u, travel_time=w, route_names=[{"route_name": rn, "mode": mode}])
+        if auto_bidirectional and not G.has_edge(v, u):
+            G.add_edge(v, u, travel_time=w, route_names=[{"route_name": rn, "mode": mode}])
     return G
 
-# Set auto_bidirectional=False because you requested no extension of stops or routes.
+# Build graph (no auto-bidirectional by default)
 G = build_graph(stops, routes, auto_bidirectional=False)
 
 def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty=0):
@@ -146,7 +137,9 @@ if "last_result" not in st.session_state:
 map_placeholder = st.empty()
 text_placeholder = st.empty()
 
-# Always show a base map (so map area doesn't vanish)
+# Always show a base map (so map area doesn't vanish).
+# IMPORTANT: call st_folium(...) but DO NOT pass its returned dict to st.write or map_placeholder.write.
+# Assign return value to a variable if you want to inspect map interaction later (but don't st.write it).
 with map_placeholder.container():
     base_center = [stops["lat"].mean(), stops["lon"].mean()]
     base_map = folium.Map(location=base_center, zoom_start=12)
@@ -159,7 +152,8 @@ with map_placeholder.container():
             fill=True,
             fill_opacity=0.6
         ).add_to(base_map)
-    st_folium(base_map, width=900, height=600)
+    # render map and capture returned state (but do NOT display that state)
+    _map_state = st_folium(base_map, width=900, height=600)
 
 # ----------------- Find Route action -----------------
 if st.button("Find Route"):
@@ -185,7 +179,7 @@ if st.button("Find Route"):
             text_placeholder.write(f"**Total travel time (legs only):** {total_travel:.1f} minutes")
             text_placeholder.write(f"**Total transfer penalty:** {total_penalty:.1f} minutes")
 
-# If we have a last_result, render its map persistently below
+# If we have a last_result, render its map persistently below (DO NOT st.write the returned dict)
 if st.session_state.get("last_result") and show_map:
     res = st.session_state["last_result"]
     orig_node = res["path"][0]
@@ -209,11 +203,5 @@ if st.session_state.get("last_result") and show_map:
             tooltip=node_data["name"]
         ).add_to(m)
     folium.PolyLine(coords, weight=6, color="green", opacity=0.8).add_to(m)
-    map_placeholder.write(st_folium(m, width=900, height=600))
-
-st.markdown("---")
-st.write("Data files used: `stops.csv` and `routes.csv` (place them in the same folder as this app).")
-if st.button("Show stops.csv (first 100 lines)"):
-    st.code(stops.head(100).to_csv(index=False))
-if st.button("Show routes.csv (first 200 lines)"):
-    st.code(routes.head(200).to_csv(index=False))
+    # render route map and capture returned state (but do NOT display it)
+    _route_map_state = st_folium(m, width=900, height=600)
