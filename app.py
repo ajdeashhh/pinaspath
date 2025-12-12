@@ -185,7 +185,7 @@ if st.session_state.get("last_result") and show_map:
                 r_opts = [f"{r.get('route_name')}({r.get('mode')})" for r in leg.get('route_options', [])]
                 route_opts = r_opts
                 break
-        popup_html = f"{node_data['name']}<br>options: {', '.join(route_opts)}\"
+        popup_html = f"{node_data['name']}<br>options: {', '.join(route_opts)}"
         folium.CircleMarker(location=(node_data["lat"], node_data["lon"]),
                             radius=6,
                             popup=popup_html,
