@@ -1,3 +1,4 @@
+# app.py
 import streamlit as st
 import pandas as pd
 import networkx as nx
@@ -6,22 +7,27 @@ import folium
 import heapq
 import os
 
-st.set_page_config(page_title="PinasPath — Streamlit Prototype (fixed)", layout="wide")
-st.title("PinasPath — Streamlit Prototype (fixed)")
-st.write("Shortest-travel-time route on local CSV data, map persists after finding a route.")
+st.set_page_config(page_title="PinasPath — Streamlit Prototype", layout="wide")
+st.title("PinasPath — Streamlit Prototype")
+st.write("Shortest-travel-time route on local CSV data. Map persists after finding a route.")
 
 # ----------------- Data loader -----------------
 @st.cache_data
 def load_data(stops_path="stops.csv", routes_path="routes.csv"):
-    # Prefer expanded files if present in pinaspath_expanded folder
-    expanded_dir = "pinaspath_expanded"
-    if os.path.exists(os.path.join(expanded_dir, "stops_expanded.csv")) and os.path.exists(os.path.join(expanded_dir, "routes_expanded.csv")):
-        stops = pd.read_csv(os.path.join(expanded_dir, "stops_expanded.csv"))
-        routes = pd.read_csv(os.path.join(expanded_dir, "routes_expanded.csv"))
-        return stops, routes
-    # fallback to provided paths
-    stops = pd.read_csv(stops_path)
-    routes = pd.read_csv(routes_path)
+    if not os.path.exists(stops_path):
+        raise FileNotFoundError(f"{stops_path} not found.")
+    if not os.path.exists(routes_path):
+        raise FileNotFoundError(f"{routes_path} not found.")
+    stops = pd.read_csv(stops_path, dtype=str)
+    routes = pd.read_csv(routes_path, dtype=str)
+    # ensure numeric columns
+    stops["lat"] = stops["lat"].astype(float)
+    stops["lon"] = stops["lon"].astype(float)
+    routes["travel_time"] = routes["travel_time"].astype(float)
+    # normalize IDs as strings
+    stops["stop_id"] = stops["stop_id"].astype(str)
+    routes["from_stop"] = routes["from_stop"].astype(str)
+    routes["to_stop"] = routes["to_stop"].astype(str)
     return stops, routes
 
 # Load data (will be cached)
@@ -35,10 +41,16 @@ except Exception as e:
 st.sidebar.header("Trip input")
 stop_names = stops["stop_name"].tolist()
 origin_name = st.sidebar.selectbox("Origin", stop_names, index=0)
-destination_name = st.sidebar.selectbox("Destination", stop_names, index=1)
+destination_name = st.sidebar.selectbox("Destination", stop_names, index=1 if len(stop_names) > 1 else 0)
 show_map = st.sidebar.checkbox("Show map", value=True)
-transfer_penalty = st.sidebar.number_input("Transfer penalty (minutes)", min_value=0, max_value=60, value=2, step=1,
-                                           help="Penalty added when the mode or route changes between legs.")
+transfer_penalty = st.sidebar.number_input(
+    "Transfer penalty (minutes)",
+    min_value=0,
+    max_value=60,
+    value=2,
+    step=1,
+    help="Penalty added when the mode or route changes between legs."
+)
 
 # ----------------- Helpers -----------------
 def name_to_id(name):
@@ -59,23 +71,22 @@ def build_graph(stops_df, routes_df):
         w = float(r["travel_time"])
         mode = r.get("mode", "")
         rn = r.get("route_name", "")
-        # if multiple parallel edges exist, we keep the smallest travel_time (or add separate attribute)
         if G.has_edge(u, v):
-            # keep min travel_time and append route info
             existing = G[u][v]
-            # keep the smaller travel_time but also store route list
+            # keep min travel_time
             if w < existing.get("travel_time", float("inf")):
                 existing["travel_time"] = w
             routes_list = existing.get("route_names", [])
-            routes_list.append({"route_name": rn, "mode": mode})
+            # append route if not duplicate
+            if not any(x.get("route_name") == rn and x.get("mode") == mode for x in routes_list):
+                routes_list.append({"route_name": rn, "mode": mode})
             existing["route_names"] = routes_list
         else:
-            G.add_edge(u, v, travel_time=w, mode=mode, route_names=[{"route_name": rn, "mode": mode}])
+            G.add_edge(u, v, travel_time=w, route_names=[{"route_name": rn, "mode": mode}])
     return G
 
 G = build_graph(stops, routes)
 
-# shortest path with transfer penalty (Dijkstra variant)
 def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty=0):
     pq = []
     heapq.heappush(pq, (0.0, origin, None, None, [origin], []))
@@ -91,20 +102,18 @@ def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty
         for nbr in G.neighbors(node):
             e = G[node][nbr]
             travel_time = float(e.get("travel_time", 0.0))
-            # choose representative mode & route for penalty logic (take first entry)
             rn_list = e.get("route_names", [])
             if rn_list:
                 mode = rn_list[0].get("mode")
                 route_name = rn_list[0].get("route_name")
             else:
-                mode = e.get("mode")
+                mode = e.get("mode", "")
                 route_name = ""
             add = 0.0
             if prev_mode is not None:
                 if mode != prev_mode:
                     add = transfer_penalty
                 else:
-                    # if route changed (simple heuristic)
                     if prev_route and route_name and prev_route != route_name:
                         add = transfer_penalty
             new_cost = cost + travel_time + add
@@ -132,12 +141,19 @@ text_placeholder = st.empty()
 
 # Always show a base map (so map area doesn't vanish)
 with map_placeholder.container():
-    base_center = [stops["lat"].astype(float).mean(), stops["lon"].astype(float).mean()]
+    base_center = [stops["lat"].mean(), stops["lon"].mean()]
     base_map = folium.Map(location=base_center, zoom_start=12)
-    # show small markers for stops (don't overload)
-    sample = stops.sample(min(200, len(stops)), random_state=1) if len(stops) > 200 else stops
+    # show small markers for stops (limit to 300)
+    sample = stops.sample(min(300, len(stops)), random_state=1) if len(stops) > 300 else stops
     for _, r in sample.iterrows():
-        folium.CircleMarker(location=(float(r["lat"]), float(r["lon"])), radius=2, color="#444", fill=True, fill_opacity=0.6).add_to(base_map)
+        folium.CircleMarker(
+            location=(float(r["lat"]), float(r["lon"])),
+            radius=2,
+            color="#444",
+            fill=True,
+            fill_opacity=0.6
+        ).add_to(base_map)
+    # render base map once (will be overwritten by route map when route is found)
     st_folium(base_map, width=900, height=600)
 
 # ----------------- Find Route action -----------------
@@ -157,9 +173,9 @@ if st.button("Find Route"):
             text_placeholder.subheader("Route legs")
             text_placeholder.write(f"Estimated total (including penalties): **{res['total_cost']:.1f} minutes**")
             for i, leg in enumerate(res["legs"], 1):
-                text = f"{i}. {leg['from_name']} → {leg['to_name']} — {leg['mode']} ({leg['route_name']}) | {leg['travel_time']} min"
-                if leg['penalty']>0:
-                    text += f" + {leg['penalty']} min transfer penalty"
+                text = f"{i}. {leg['from_name']} → {leg['to_name']} — {leg['mode']} ({leg['route_name']}) | {leg['travel_time']:.1f} min"
+                if leg['penalty'] > 0:
+                    text += f" + {leg['penalty']:.1f} min transfer penalty"
                 text_placeholder.write(text)
             text_placeholder.write(f"**Total travel time (legs only):** {total_travel:.1f} minutes")
             text_placeholder.write(f"**Total transfer penalty:** {total_penalty:.1f} minutes")
@@ -167,7 +183,6 @@ if st.button("Find Route"):
 # If we have a last_result, render its map persistently below
 if st.session_state.get("last_result") and show_map:
     res = st.session_state["last_result"]
-    # center on first node
     orig_node = res["path"][0]
     lat0 = G.nodes[orig_node]["lat"]
     lon0 = G.nodes[orig_node]["lon"]
@@ -178,30 +193,25 @@ if st.session_state.get("last_result") and show_map:
         coords.append((node_data["lat"], node_data["lon"]))
         # marker popup includes route options if present
         route_opts = []
-        # find leg corresponding to this node->next if exists
         for leg in res["legs"]:
             if leg["from_id"] == node:
-                # format route options
-                r_opts = [f"{r.get('route_name')}({r.get('mode')})" for r in leg.get('route_options', [])]
-                route_opts = r_opts
+                route_opts = [f"{r.get('route_name')}({r.get('mode')})" for r in leg.get("route_options", [])]
                 break
         popup_html = f"{node_data['name']}<br>options: {', '.join(route_opts)}"
-        folium.CircleMarker(location=(node_data["lat"], node_data["lon"]),
-                            radius=6,
-                            popup=popup_html,
-                            tooltip=node_data["name"]).add_to(m)
+        folium.CircleMarker(
+            location=(node_data["lat"], node_data["lon"]),
+            radius=6,
+            popup=popup_html,
+            tooltip=node_data["name"]
+        ).add_to(m)
     folium.PolyLine(coords, weight=6, color="green", opacity=0.8).add_to(m)
-    # draw the persistent map
+    # draw the persistent route map
     map_placeholder.write(st_folium(m, width=900, height=600))
 
-# Provide downloads (if expanded CSVs exist)
-expanded_dir = "pinaspath_expanded"
-if os.path.exists(os.path.join(expanded_dir, "stops_expanded.csv")):
-    st.markdown("---")
-    st.markdown("### Data files available")
-    st.write(f"- Expanded stops CSV: `{os.path.join(expanded_dir, 'stops_expanded.csv')}`")
-    st.write(f"- Expanded routes CSV: `{os.path.join(expanded_dir, 'routes_expanded.csv')}`")
-    if st.button("Show sample stops CSV"):
-        st.code(open(os.path.join(expanded_dir, "stops_expanded.csv")).read()[:4000])
-    if st.button("Show sample routes CSV"):
-        st.code(open(os.path.join(expanded_dir, "routes_expanded.csv")).read()[:4000])
+# Helpful note: allow user to download the CSVs if desired
+st.markdown("---")
+st.write("Data files used: `stops.csv` and `routes.csv` (place them in the same folder as this app).")
+if st.button("Show first 100 lines of stops.csv"):
+    st.code(stops.head(100).to_csv(index=False))
+if st.button("Show first 200 lines of routes.csv"):
+    st.code(routes.head(200).to_csv(index=False))
