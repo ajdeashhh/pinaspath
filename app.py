@@ -182,7 +182,7 @@ if st.session_state.get("last_result") and show_map:
         for leg in res["legs"]:
             if leg["from_id"] == node:
                 # format route options
-                r_opts = [f\"{r.get('route_name')}({r.get('mode')})\" for r in leg.get('route_options',[])]
+                r_opts = [f"{r.get('route_name')}({r.get('mode')})" for r in leg.get('route_options', [])]
                 route_opts = r_opts
                 break
         popup_html = f\"{node_data['name']}<br>options: {', '.join(route_opts)}\"
