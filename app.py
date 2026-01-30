@@ -15,7 +15,7 @@ st.set_page_config(page_title="PinasPath — Streamlit Prototype", layout="wide"
 st.markdown("<h1 style='margin-bottom:6px;'>PinasPath</h1>", unsafe_allow_html=True)
 st.markdown(
     "<p style='margin-top:0;color:#555;'>Quick prototype — shortest-travel-time route using local CSVs (stops.csv + routes.csv).</p>",
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 # ----------------- small CSS for nicer look -----------------
@@ -30,7 +30,7 @@ st.markdown(
     .panel {background:#ffffff;border-radius:8px;padding:12px;box-shadow: 0 2px 8px rgba(0,0,0,0.06);}
     </style>
     """,
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 # ----------------- Data loader -----------------
@@ -38,7 +38,7 @@ st.markdown(
 def load_data(stops_path="stops.csv", routes_path="routes.csv"):
     """
     Load stops.csv and routes.csv.
-    - Ignores lines starting with '#'
+    - Ignores lines starting with '#' so appended comment blocks won't break parsing.
     - Coerces lat/lon to numeric (NaNs allowed).
     """
     if not os.path.exists(stops_path):
@@ -56,13 +56,10 @@ def load_data(stops_path="stops.csv", routes_path="routes.csv"):
         stops["lat"] = None
         stops["lon"] = None
 
-    routes["travel_time"] = pd.to_numeric(
-        routes["travel_time"], errors="coerce"
-    ).fillna(1.0)
+    routes["travel_time"] = pd.to_numeric(routes["travel_time"], errors="coerce").fillna(1.0)
 
     if "stop_id" in stops.columns:
         stops["stop_id"] = stops["stop_id"].astype(str)
-
     if "from_stop" in routes.columns and "to_stop" in routes.columns:
         routes["from_stop"] = routes["from_stop"].astype(str)
         routes["to_stop"] = routes["to_stop"].astype(str)
@@ -76,7 +73,7 @@ except Exception as e:
     st.error(f"Error loading CSVs: {e}")
     st.stop()
 
-# ----------------- Sidebar -----------------
+# ----------------- Sidebar: inputs & explanation -----------------
 st.sidebar.header("Plan a trip")
 
 stop_names = stops["stop_name"].tolist()
@@ -91,12 +88,12 @@ transfer_penalty = st.sidebar.number_input(
     max_value=30,
     value=2,
     step=1,
-    help="Extra minutes added each time the traveler changes vehicle/route (models waiting/walking)."
+    help="Extra minutes added each time the traveler changes vehicle/route (models waiting/walking).",
 )
 
 st.sidebar.markdown(
     "<small>Increase the penalty to prefer fewer transfers even if travel time rises slightly.</small>",
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 show_map = st.sidebar.checkbox("Show map", value=True)
@@ -108,7 +105,7 @@ st.sidebar.markdown(
     '<span class="mode-badge mode-bus">Bus</span> '
     '<span class="mode-badge mode-jeepney">Jeepney</span> '
     '<span class="mode-badge mode-walk">Walk</span>',
-    unsafe_allow_html=True
+    unsafe_allow_html=True,
 )
 
 # ----------------- Helpers -----------------
@@ -122,7 +119,6 @@ def name_to_id(name):
 origin_id = name_to_id(origin_name)
 destination_id = name_to_id(destination_name)
 
-
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371.0
     phi1 = math.radians(lat1)
@@ -131,12 +127,11 @@ def haversine_km(lat1, lon1, lat2, lon2):
     dlambda = math.radians(lon2 - lon1)
     a = (
         math.sin(dphi / 2.0) ** 2
-        + math.cos(phi1) * math.cos(phi2)
-        * math.sin(dlambda / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2.0) ** 2
     )
     return 2 * R * math.asin(math.sqrt(a))
 
-
+# --- Graph builder + auto-fixes ---
 def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700):
     G = nx.DiGraph()
 
@@ -153,6 +148,7 @@ def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700
             w = float(r["travel_time"])
         except Exception:
             w = 1.0
+
         mode = r.get("mode", "") or ""
         rn = r.get("route_name", "") or ""
 
@@ -172,17 +168,21 @@ def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700
                 u,
                 v,
                 travel_time=w,
-                route_names=[{"route_name": rn, "mode": mode}]
+                route_names=[{"route_name": rn, "mode": mode}],
             )
 
     edges_to_add = []
     for u, v, data in list(G.edges(data=True)):
         if not G.has_edge(v, u):
             edges_to_add.append(
-                (v, u, {
-                    "travel_time": data.get("travel_time", 1.0),
-                    "route_names": data.get("route_names", [])
-                })
+                (
+                    v,
+                    u,
+                    {
+                        "travel_time": data.get("travel_time", 1.0),
+                        "route_names": data.get("route_names", []),
+                    },
+                )
             )
 
     for a, b, attrs in edges_to_add:
@@ -195,7 +195,6 @@ def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700
                 coords.append((n, float(d["lat"]), float(d["lon"])))
 
         th_km = walk_thresh_m / 1000.0
-
         for i in range(len(coords)):
             id1, lat1, lon1 = coords[i]
             for j in range(i + 1, len(coords)):
@@ -205,19 +204,20 @@ def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700
                     walk_time_min = max(1.0, (dist_km * 1000) / 80.0)
                     if not G.has_edge(id1, id2):
                         G.add_edge(
-                            id1, id2,
+                            id1,
+                            id2,
                             travel_time=walk_time_min,
-                            route_names=[{"route_name": "walk", "mode": "walk"}]
+                            route_names=[{"route_name": "walk", "mode": "walk"}],
                         )
                     if not G.has_edge(id2, id1):
                         G.add_edge(
-                            id2, id1,
+                            id2,
+                            id1,
                             travel_time=walk_time_min,
-                            route_names=[{"route_name": "walk", "mode": "walk"}]
+                            route_names=[{"route_name": "walk", "mode": "walk"}],
                         )
 
     return G
 
 
 G = build_full_graph(stops, routes, add_walk_links=True, walk_thresh_m=700)
-
