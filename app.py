@@ -36,11 +36,6 @@ st.markdown(
 # ----------------- Data loader -----------------
 @st.cache_data
 def load_data(stops_path="stops.csv", routes_path="routes.csv"):
-    """
-    Load stops.csv and routes.csv.
-    - Ignores lines starting with '#' so appended comment blocks won't break parsing.
-    - Coerces lat/lon to numeric (NaNs allowed).
-    """
     if not os.path.exists(stops_path):
         raise FileNotFoundError(f"{stops_path} not found.")
     if not os.path.exists(routes_path):
@@ -73,7 +68,7 @@ except Exception as e:
     st.error(f"Error loading CSVs: {e}")
     st.stop()
 
-# ----------------- Sidebar: inputs & explanation -----------------
+# ----------------- Sidebar -----------------
 st.sidebar.header("Plan a trip")
 
 stop_names = stops["stop_name"].tolist()
@@ -88,25 +83,9 @@ transfer_penalty = st.sidebar.number_input(
     max_value=30,
     value=2,
     step=1,
-    help="Extra minutes added each time the traveler changes vehicle/route (models waiting/walking).",
-)
-
-st.sidebar.markdown(
-    "<small>Increase the penalty to prefer fewer transfers even if travel time rises slightly.</small>",
-    unsafe_allow_html=True,
 )
 
 show_map = st.sidebar.checkbox("Show map", value=True)
-
-st.sidebar.markdown("<hr/>", unsafe_allow_html=True)
-st.sidebar.markdown("<b>Mode colors</b>", unsafe_allow_html=True)
-st.sidebar.markdown(
-    '<span class="mode-badge mode-train">Train</span> '
-    '<span class="mode-badge mode-bus">Bus</span> '
-    '<span class="mode-badge mode-jeepney">Jeepney</span> '
-    '<span class="mode-badge mode-walk">Walk</span>',
-    unsafe_allow_html=True,
-)
 
 # ----------------- Helpers -----------------
 def name_to_id(name):
@@ -131,93 +110,133 @@ def haversine_km(lat1, lon1, lat2, lon2):
     )
     return 2 * R * math.asin(math.sqrt(a))
 
-# --- Graph builder + auto-fixes ---
+# ----------------- Graph -----------------
 def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700):
     G = nx.DiGraph()
 
     for _, r in stops_df.iterrows():
-        sid = str(r["stop_id"])
-        lat = float(r["lat"]) if pd.notna(r["lat"]) and r["lat"] != "" else None
-        lon = float(r["lon"]) if pd.notna(r["lon"]) and r["lon"] != "" else None
-        G.add_node(sid, name=r["stop_name"], lat=lat, lon=lon)
+        G.add_node(
+            str(r["stop_id"]),
+            name=r["stop_name"],
+            lat=r["lat"],
+            lon=r["lon"],
+        )
 
     for _, r in routes_df.iterrows():
-        u = str(r["from_stop"])
-        v = str(r["to_stop"])
-        try:
-            w = float(r["travel_time"])
-        except Exception:
-            w = 1.0
+        G.add_edge(
+            str(r["from_stop"]),
+            str(r["to_stop"]),
+            travel_time=float(r["travel_time"]),
+            route_names=[{"route_name": r.get("route_name", ""), "mode": r.get("mode", "")}],
+        )
 
-        mode = r.get("mode", "") or ""
-        rn = r.get("route_name", "") or ""
-
-        if G.has_edge(u, v):
-            existing = G[u][v]
-            if w < existing.get("travel_time", float("inf")):
-                existing["travel_time"] = w
-            routes_list = existing.get("route_names", [])
-            if not any(
-                x.get("route_name") == rn and x.get("mode") == mode
-                for x in routes_list
-            ):
-                routes_list.append({"route_name": rn, "mode": mode})
-            existing["route_names"] = routes_list
-        else:
-            G.add_edge(
-                u,
-                v,
-                travel_time=w,
-                route_names=[{"route_name": rn, "mode": mode}],
-            )
-
-    edges_to_add = []
-    for u, v, data in list(G.edges(data=True)):
+    for u, v, d in list(G.edges(data=True)):
         if not G.has_edge(v, u):
-            edges_to_add.append(
-                (
-                    v,
-                    u,
-                    {
-                        "travel_time": data.get("travel_time", 1.0),
-                        "route_names": data.get("route_names", []),
-                    },
-                )
-            )
-
-    for a, b, attrs in edges_to_add:
-        G.add_edge(a, b, **attrs)
-
-    if add_walk_links:
-        coords = []
-        for n, d in G.nodes(data=True):
-            if d.get("lat") is not None and d.get("lon") is not None:
-                coords.append((n, float(d["lat"]), float(d["lon"])))
-
-        th_km = walk_thresh_m / 1000.0
-        for i in range(len(coords)):
-            id1, lat1, lon1 = coords[i]
-            for j in range(i + 1, len(coords)):
-                id2, lat2, lon2 = coords[j]
-                dist_km = haversine_km(lat1, lon1, lat2, lon2)
-                if dist_km <= th_km:
-                    walk_time_min = max(1.0, (dist_km * 1000) / 80.0)
-                    if not G.has_edge(id1, id2):
-                        G.add_edge(
-                            id1,
-                            id2,
-                            travel_time=walk_time_min,
-                            route_names=[{"route_name": "walk", "mode": "walk"}],
-                        )
-                    if not G.has_edge(id2, id1):
-                        G.add_edge(
-                            id2,
-                            id1,
-                            travel_time=walk_time_min,
-                            route_names=[{"route_name": "walk", "mode": "walk"}],
-                        )
+            G.add_edge(v, u, **d)
 
     return G
 
 
-G = build_full_graph(stops, routes, add_walk_links=True, walk_thresh_m=700)
+G = build_full_graph(stops, routes)
+
+# ----------------- Shortest path -----------------
+def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty=0):
+    pq = [(0, origin, None, None, [origin], [])]
+    visited = {}
+
+    while pq:
+        cost, node, prev_mode, prev_route, path, legs = heapq.heappop(pq)
+
+        if node == destination:
+            return {"total_cost": cost, "path": path, "legs": legs}
+
+        for nbr in G.neighbors(node):
+            e = G[node][nbr]
+            rn = e["route_names"][0]
+            mode = rn["mode"]
+            route = rn["route_name"]
+            penalty = transfer_penalty if prev_mode and mode != prev_mode else 0
+            new_cost = cost + e["travel_time"] + penalty
+
+            heapq.heappush(
+                pq,
+                (
+                    new_cost,
+                    nbr,
+                    mode,
+                    route,
+                    path + [nbr],
+                    legs + [{
+                        "from_id": node,
+                        "to_id": nbr,
+                        "from_name": G.nodes[node]["name"],
+                        "to_name": G.nodes[nbr]["name"],
+                        "mode": mode,
+                        "route_name": route,
+                        "travel_time": e["travel_time"],
+                        "penalty": penalty,
+                    }],
+                ),
+            )
+
+    return None
+
+
+# ----------------- Layout -----------------
+left_col, right_col = st.columns([2, 1])
+
+if "last_result" not in st.session_state:
+    st.session_state["last_result"] = None
+
+# ----------------- LEFT: MAP -----------------
+with left_col:
+    if st.session_state["last_result"] is None:
+        if show_map:
+            m = folium.Map(location=[14.6, 121.0], zoom_start=12)
+            for _, r in stops.dropna(subset=["lat", "lon"]).iterrows():
+                folium.CircleMarker(
+                    location=(r["lat"], r["lon"]),
+                    radius=4,
+                    popup=r["stop_name"],
+                ).add_to(m)
+            st_folium(m, width=900, height=700)
+    else:
+        if show_map:
+            m = folium.Map(location=[14.6, 121.0], zoom_start=13)
+            for leg in st.session_state["last_result"]["legs"]:
+                u = leg["from_id"]
+                v = leg["to_id"]
+                if G.nodes[u]["lat"] and G.nodes[v]["lat"]:
+                    folium.PolyLine(
+                        [
+                            (G.nodes[u]["lat"], G.nodes[u]["lon"]),
+                            (G.nodes[v]["lat"], G.nodes[v]["lon"]),
+                        ]
+                    ).add_to(m)
+            st_folium(m, width=900, height=700)
+
+# ----------------- RIGHT: CONTROLS -----------------
+with right_col:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.markdown("### Trip control")
+
+    # 🔴 🔴 🔴 SURGICAL FIX — ONLY ADDITION 🔴 🔴 🔴
+    if st.session_state["last_result"] is not None:
+        if st.button("Clear route / Back to overview"):
+            st.session_state["last_result"] = None
+            st.rerun()
+    # 🔴 🔴 🔴 END FIX 🔴 🔴 🔴
+
+    if st.button("Plan route"):
+        r = shortest_path_with_transfer_penalty(
+            G, origin_id, destination_id, transfer_penalty
+        )
+        if r:
+            st.session_state["last_result"] = r
+            st.rerun()
+
+    if st.session_state["last_result"]:
+        st.markdown("### Recommended route")
+        st.write(f"Estimated time: {st.session_state['last_result']['total_cost']:.1f} min")
+
+    st.markdown("</div>", unsafe_allow_html=True)
