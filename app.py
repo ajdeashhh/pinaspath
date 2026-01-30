@@ -137,15 +137,25 @@ G = build_full_graph(stops, routes)
 
 # ----------------- Shortest path -----------------
 def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty=0):
+    if origin not in G or destination not in G:
+        return None
+    
+    # Priority queue: (total_cost, node, prev_mode, prev_route, path, legs)
     pq = [(0, origin, None, None, [origin], [])]
-    visited = {}
-
+    # Distance dictionary: min cost to reach each node
+    dist = {origin: 0}
+    
     while pq:
         cost, node, prev_mode, prev_route, path, legs = heapq.heappop(pq)
-
+        
+        # If we've reached the destination, return the result
         if node == destination:
             return {"total_cost": cost, "path": path, "legs": legs}
-
+        
+        # Skip if we've already found a better path to this node
+        if cost > dist.get(node, float('inf')):
+            continue
+        
         for nbr in G.neighbors(node):
             e = G[node][nbr]
             rn = e["route_names"][0]
@@ -153,30 +163,32 @@ def shortest_path_with_transfer_penalty(G, origin, destination, transfer_penalty
             route = rn["route_name"]
             penalty = transfer_penalty if prev_mode and mode != prev_mode else 0
             new_cost = cost + e["travel_time"] + penalty
-
-            heapq.heappush(
-                pq,
-                (
-                    new_cost,
-                    nbr,
-                    mode,
-                    route,
-                    path + [nbr],
-                    legs + [{
-                        "from_id": node,
-                        "to_id": nbr,
-                        "from_name": G.nodes[node]["name"],
-                        "to_name": G.nodes[nbr]["name"],
-                        "mode": mode,
-                        "route_name": route,
-                        "travel_time": e["travel_time"],
-                        "penalty": penalty,
-                    }],
-                ),
-            )
-
+            
+            # Only explore if this is a better path to the neighbor
+            if new_cost < dist.get(nbr, float('inf')):
+                dist[nbr] = new_cost
+                heapq.heappush(
+                    pq,
+                    (
+                        new_cost,
+                        nbr,
+                        mode,
+                        route,
+                        path + [nbr],
+                        legs + [{
+                            "from_id": node,
+                            "to_id": nbr,
+                            "from_name": G.nodes[node]["name"],
+                            "to_name": G.nodes[nbr]["name"],
+                            "mode": mode,
+                            "route_name": route,
+                            "travel_time": e["travel_time"],
+                            "penalty": penalty,
+                        }],
+                    ),
+                )
+    
     return None
-
 
 # ----------------- Layout -----------------
 left_col, right_col = st.columns([2, 1])
@@ -195,6 +207,17 @@ with left_col:
                     radius=4,
                     popup=r["stop_name"],
                 ).add_to(m)
+            # Add legend
+            legend_html = '''
+            <div style="position: fixed; bottom: 50px; left: 50px; width: 150px; height: 120px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px">
+                <p><b>Route Legend</b></p>
+                <p><span style="color:#1f77b4;">&#9679;</span> Bus</p>
+                <p><span style="color:#2ca02c;">&#9679;</span> Train</p>
+                <p><span style="color:#ff7f0e;">&#9679;</span> Jeepney</p>
+                <p><span style="color:#7f7f7f;">&#9679;</span> Walk</p>
+            </div>
+            '''
+            m.get_root().html.add_child(folium.Element(legend_html))
             st_folium(m, width=900, height=700)
     else:
         if show_map:
@@ -220,6 +243,17 @@ with left_col:
                         weight=6,
                     ).add_to(m)
 
+            # Add legend
+            legend_html = '''
+            <div style="position: fixed; bottom: 50px; left: 50px; width: 150px; height: 120px; background-color: white; border:2px solid grey; z-index:9999; font-size:14px; padding: 10px">
+                <p><b>Route Legend</b></p>
+                <p><span style="color:#1f77b4;">&#9679;</span> Bus</p>
+                <p><span style="color:#2ca02c;">&#9679;</span> Train</p>
+                <p><span style="color:#ff7f0e;">&#9679;</span> Jeepney</p>
+                <p><span style="color:#7f7f7f;">&#9679;</span> Walk</p>
+            </div>
+            '''
+            m.get_root().html.add_child(folium.Element(legend_html))
             st_folium(m, width=900, height=700)
 
 # ----------------- RIGHT: CONTROLS -----------------
