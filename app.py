@@ -78,11 +78,7 @@ destination_name = st.sidebar.selectbox(
 )
 
 transfer_penalty = st.sidebar.number_input(
-    "Transfer penalty (min)",
-    min_value=0,
-    max_value=30,
-    value=2,
-    step=1,
+    "Transfer penalty (min)", min_value=0, max_value=30, value=2, step=1
 )
 
 show_map = st.sidebar.checkbox("Show map", value=True)
@@ -110,7 +106,7 @@ def haversine_km(lat1, lon1, lat2, lon2):
     )
     return 2 * R * math.asin(math.sqrt(a))
 
-# ----------------- Graph -----------------
+# ----------------- Graph builder -----------------
 def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700):
     G = nx.DiGraph()
 
@@ -207,12 +203,23 @@ with left_col:
                 u = leg["from_id"]
                 v = leg["to_id"]
                 if G.nodes[u]["lat"] and G.nodes[v]["lat"]:
+                    color = "#7f7f7f"
+                    if "train" in leg["mode"].lower():
+                        color = "#2ca02c"
+                    elif "bus" in leg["mode"].lower():
+                        color = "#1f77b4"
+                    elif "jeep" in leg["mode"].lower():
+                        color = "#ff7f0e"
+
                     folium.PolyLine(
                         [
                             (G.nodes[u]["lat"], G.nodes[u]["lon"]),
                             (G.nodes[v]["lat"], G.nodes[v]["lon"]),
-                        ]
+                        ],
+                        color=color,
+                        weight=6,
                     ).add_to(m)
+
             st_folium(m, width=900, height=700)
 
 # ----------------- RIGHT: CONTROLS -----------------
@@ -220,12 +227,12 @@ with right_col:
     st.markdown('<div class="panel">', unsafe_allow_html=True)
     st.markdown("### Trip control")
 
-    # 🔴 🔴 🔴 SURGICAL FIX — ONLY ADDITION 🔴 🔴 🔴
+    # ✅ SURGICAL FIX — ONLY ADDITION
     if st.session_state["last_result"] is not None:
         if st.button("Clear route / Back to overview"):
             st.session_state["last_result"] = None
             st.rerun()
-    # 🔴 🔴 🔴 END FIX 🔴 🔴 🔴
+    # ✅ END FIX
 
     if st.button("Plan route"):
         r = shortest_path_with_transfer_penalty(
@@ -237,6 +244,21 @@ with right_col:
 
     if st.session_state["last_result"]:
         st.markdown("### Recommended route")
-        st.write(f"Estimated time: {st.session_state['last_result']['total_cost']:.1f} min")
+
+        for leg in st.session_state["last_result"]["legs"]:
+            badge = "mode-walk"
+            if "train" in leg["mode"].lower():
+                badge = "mode-train"
+            elif "bus" in leg["mode"].lower():
+                badge = "mode-bus"
+            elif "jeep" in leg["mode"].lower():
+                badge = "mode-jeepney"
+
+            st.markdown(
+                f"<span class='mode-badge {badge}'>{leg['mode']}</span> "
+                f"{leg['from_name']} → {leg['to_name']} "
+                f"<small>{leg['travel_time']:.1f} min</small>",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("</div>", unsafe_allow_html=True)
