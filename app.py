@@ -231,3 +231,4 @@ with left:
                 ).add_to(m)
 
         st_folium(m, width=900, height=650)
+
