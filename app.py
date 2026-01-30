@@ -1,4 +1,4 @@
-# app.py — PinasPath (map-accurate where data allows)
+# app.py — Full PinasPath app (auto-bidir + walking connectors, safe parsing)
 
 import streamlit as st
 import pandas as pd
@@ -9,226 +9,215 @@ from datetime import datetime, timedelta
 from streamlit_folium import st_folium
 import folium
 import os
-import requests
 
-# ----------------- Page setup -----------------
-st.set_page_config(page_title="PinasPath", layout="wide")
-st.title("PinasPath")
-st.caption(
-    "🗺️ Walking & jeepney paths follow real roads. Train lines are schematic (station-to-station)."
+st.set_page_config(page_title="PinasPath — Streamlit Prototype", layout="wide")
+
+st.markdown("<h1 style='margin-bottom:6px;'>PinasPath</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p style='margin-top:0;color:#555;'>Quick prototype — shortest-travel-time route using local CSVs (stops.csv + routes.csv).</p>",
+    unsafe_allow_html=True
+)
+
+# ----------------- small CSS for nicer look -----------------
+st.markdown(
+    """
+    <style>
+    .mode-badge {display:inline-block;padding:4px 8px;border-radius:6px;color:white;font-weight:600;margin-right:6px;}
+    .mode-bus {background:#1f77b4;}
+    .mode-train {background:#2ca02c;}
+    .mode-jeepney {background:#ff7f0e;}
+    .mode-walk {background:#7f7f7f;}
+    .panel {background:#ffffff;border-radius:8px;padding:12px;box-shadow: 0 2px 8px rgba(0,0,0,0.06);}
+    </style>
+    """,
+    unsafe_allow_html=True
 )
 
 # ----------------- Data loader -----------------
 @st.cache_data
 def load_data(stops_path="stops.csv", routes_path="routes.csv"):
-    if not os.path.exists(stops_path) or not os.path.exists(routes_path):
-        st.error("stops.csv or routes.csv not found")
-        st.stop()
+    """
+    Load stops.csv and routes.csv.
+    - Ignores lines starting with '#'
+    - Coerces lat/lon to numeric (NaNs allowed).
+    """
+    if not os.path.exists(stops_path):
+        raise FileNotFoundError(f"{stops_path} not found.")
+    if not os.path.exists(routes_path):
+        raise FileNotFoundError(f"{routes_path} not found.")
 
     stops = pd.read_csv(stops_path, dtype=str, comment="#")
     routes = pd.read_csv(routes_path, dtype=str, comment="#")
 
-    stops["lat"] = pd.to_numeric(stops.get("lat"), errors="coerce")
-    stops["lon"] = pd.to_numeric(stops.get("lon"), errors="coerce")
-    routes["travel_time"] = pd.to_numeric(routes["travel_time"], errors="coerce").fillna(1)
+    if "lat" in stops.columns and "lon" in stops.columns:
+        stops["lat"] = pd.to_numeric(stops["lat"], errors="coerce")
+        stops["lon"] = pd.to_numeric(stops["lon"], errors="coerce")
+    else:
+        stops["lat"] = None
+        stops["lon"] = None
 
-    stops["stop_id"] = stops["stop_id"].astype(str)
-    routes["from_stop"] = routes["from_stop"].astype(str)
-    routes["to_stop"] = routes["to_stop"].astype(str)
+    routes["travel_time"] = pd.to_numeric(
+        routes["travel_time"], errors="coerce"
+    ).fillna(1.0)
+
+    if "stop_id" in stops.columns:
+        stops["stop_id"] = stops["stop_id"].astype(str)
+
+    if "from_stop" in routes.columns and "to_stop" in routes.columns:
+        routes["from_stop"] = routes["from_stop"].astype(str)
+        routes["to_stop"] = routes["to_stop"].astype(str)
 
     return stops, routes
 
 
-stops, routes = load_data()
+try:
+    stops, routes = load_data()
+except Exception as e:
+    st.error(f"Error loading CSVs: {e}")
+    st.stop()
 
 # ----------------- Sidebar -----------------
 st.sidebar.header("Plan a trip")
 
 stop_names = stops["stop_name"].tolist()
-origin_name = st.sidebar.selectbox("Origin", stop_names, 0)
-destination_name = st.sidebar.selectbox("Destination", stop_names, 1)
-
-transfer_penalty = st.sidebar.number_input(
-    "Transfer penalty (min)", min_value=0, max_value=30, value=2
+origin_name = st.sidebar.selectbox("Origin", stop_names, index=0)
+destination_name = st.sidebar.selectbox(
+    "Destination", stop_names, index=1 if len(stop_names) > 1 else 0
 )
 
-show_map = st.sidebar.checkbox("Show map", True)
+transfer_penalty = st.sidebar.number_input(
+    "Transfer penalty (min)",
+    min_value=0,
+    max_value=30,
+    value=2,
+    step=1,
+    help="Extra minutes added each time the traveler changes vehicle/route (models waiting/walking)."
+)
 
+st.sidebar.markdown(
+    "<small>Increase the penalty to prefer fewer transfers even if travel time rises slightly.</small>",
+    unsafe_allow_html=True
+)
 
+show_map = st.sidebar.checkbox("Show map", value=True)
+
+st.sidebar.markdown("<hr/>", unsafe_allow_html=True)
+st.sidebar.markdown("<b>Mode colors</b>", unsafe_allow_html=True)
+st.sidebar.markdown(
+    '<span class="mode-badge mode-train">Train</span> '
+    '<span class="mode-badge mode-bus">Bus</span> '
+    '<span class="mode-badge mode-jeepney">Jeepney</span> '
+    '<span class="mode-badge mode-walk">Walk</span>',
+    unsafe_allow_html=True
+)
+
+# ----------------- Helpers -----------------
 def name_to_id(name):
-    return stops.loc[stops["stop_name"] == name, "stop_id"].values[0]
+    row = stops[stops["stop_name"] == name]
+    if row.empty:
+        return None
+    return str(row["stop_id"].values[0])
 
 
 origin_id = name_to_id(origin_name)
 destination_id = name_to_id(destination_name)
 
-# ----------------- OSRM geometry -----------------
-@st.cache_data(show_spinner=False)
-def osrm_geometry(lat1, lon1, lat2, lon2, profile):
-    try:
-        url = (
-            f"https://router.project-osrm.org/route/v1/"
-            f"{profile}/{lon1},{lat1};{lon2},{lat2}"
-            "?overview=full&geometries=geojson"
-        )
-        r = requests.get(url, timeout=10).json()
-        coords = r["routes"][0]["geometry"]["coordinates"]
-        return [(lat, lon) for lon, lat in coords]
-    except Exception:
-        return None
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dphi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2)
+        * math.sin(dlambda / 2.0) ** 2
+    )
+    return 2 * R * math.asin(math.sqrt(a))
 
 
-# ----------------- Graph builder -----------------
-def build_graph(stops_df, routes_df):
+def build_full_graph(stops_df, routes_df, add_walk_links=True, walk_thresh_m=700):
     G = nx.DiGraph()
 
     for _, r in stops_df.iterrows():
-        G.add_node(
-            r["stop_id"],
-            name=r["stop_name"],
-            lat=r["lat"],
-            lon=r["lon"],
-        )
+        sid = str(r["stop_id"])
+        lat = float(r["lat"]) if pd.notna(r["lat"]) and r["lat"] != "" else None
+        lon = float(r["lon"]) if pd.notna(r["lon"]) and r["lon"] != "" else None
+        G.add_node(sid, name=r["stop_name"], lat=lat, lon=lon)
 
     for _, r in routes_df.iterrows():
-        G.add_edge(
-            r["from_stop"],
-            r["to_stop"],
-            travel_time=float(r["travel_time"]),
-            mode=r["mode"],
-            route_name=r["route_name"],
-        )
+        u = str(r["from_stop"])
+        v = str(r["to_stop"])
+        try:
+            w = float(r["travel_time"])
+        except Exception:
+            w = 1.0
+        mode = r.get("mode", "") or ""
+        rn = r.get("route_name", "") or ""
+
+        if G.has_edge(u, v):
+            existing = G[u][v]
+            if w < existing.get("travel_time", float("inf")):
+                existing["travel_time"] = w
+            routes_list = existing.get("route_names", [])
+            if not any(
+                x.get("route_name") == rn and x.get("mode") == mode
+                for x in routes_list
+            ):
+                routes_list.append({"route_name": rn, "mode": mode})
+            existing["route_names"] = routes_list
+        else:
+            G.add_edge(
+                u,
+                v,
+                travel_time=w,
+                route_names=[{"route_name": rn, "mode": mode}]
+            )
+
+    edges_to_add = []
+    for u, v, data in list(G.edges(data=True)):
+        if not G.has_edge(v, u):
+            edges_to_add.append(
+                (v, u, {
+                    "travel_time": data.get("travel_time", 1.0),
+                    "route_names": data.get("route_names", [])
+                })
+            )
+
+    for a, b, attrs in edges_to_add:
+        G.add_edge(a, b, **attrs)
+
+    if add_walk_links:
+        coords = []
+        for n, d in G.nodes(data=True):
+            if d.get("lat") is not None and d.get("lon") is not None:
+                coords.append((n, float(d["lat"]), float(d["lon"])))
+
+        th_km = walk_thresh_m / 1000.0
+
+        for i in range(len(coords)):
+            id1, lat1, lon1 = coords[i]
+            for j in range(i + 1, len(coords)):
+                id2, lat2, lon2 = coords[j]
+                dist_km = haversine_km(lat1, lon1, lat2, lon2)
+                if dist_km <= th_km:
+                    walk_time_min = max(1.0, (dist_km * 1000) / 80.0)
+                    if not G.has_edge(id1, id2):
+                        G.add_edge(
+                            id1, id2,
+                            travel_time=walk_time_min,
+                            route_names=[{"route_name": "walk", "mode": "walk"}]
+                        )
+                    if not G.has_edge(id2, id1):
+                        G.add_edge(
+                            id2, id1,
+                            travel_time=walk_time_min,
+                            route_names=[{"route_name": "walk", "mode": "walk"}]
+                        )
 
     return G
 
 
-G = build_graph(stops, routes)
-
-# ----------------- Shortest path -----------------
-def shortest_path(G, origin, destination, penalty):
-    pq = [(0, origin, None, None, [])]
-    visited = {}
-
-    while pq:
-        cost, node, prev_mode, prev_route, legs = heapq.heappop(pq)
-        key = (node, prev_mode, prev_route)
-
-        if key in visited and visited[key] <= cost:
-            continue
-        visited[key] = cost
-
-        if node == destination:
-            return {"total": cost, "legs": legs}
-
-        for nbr in G.neighbors(node):
-            e = G[node][nbr]
-            add = 0
-            if prev_mode and (e["mode"] != prev_mode or e["route_name"] != prev_route):
-                add = penalty
-
-            new_leg = {
-                "from": node,
-                "to": nbr,
-                "mode": e["mode"],
-                "route": e["route_name"],
-                "time": e["travel_time"],
-                "penalty": add,
-            }
-
-            heapq.heappush(
-                pq,
-                (
-                    cost + e["travel_time"] + add,
-                    nbr,
-                    e["mode"],
-                    e["route_name"],
-                    legs + [new_leg],
-                ),
-            )
-
-    return None
-
-
-def compress_legs(legs):
-    if not legs:
-        return []
-
-    out = [legs[0].copy()]
-    for l in legs[1:]:
-        last = out[-1]
-        if l["mode"] == last["mode"] and l["route"] == last["route"]:
-            last["to"] = l["to"]
-            last["time"] += l["time"]
-            last["penalty"] += l["penalty"]
-        else:
-            out.append(l.copy())
-    return out
-
-
-# ----------------- Layout -----------------
-left, right = st.columns([2, 1])
-
-if "result" not in st.session_state:
-    st.session_state.result = None
-
-# ----------------- Controls -----------------
-with right:
-    if st.button("Plan route"):
-        st.session_state.result = shortest_path(
-            G, origin_id, destination_id, transfer_penalty
-        )
-        st.rerun()
-
-    if st.session_state.result:
-        legs = compress_legs(st.session_state.result["legs"])
-        total = sum(l["time"] + l["penalty"] for l in legs)
-
-        st.markdown("### Route")
-        st.write(f"**Estimated total:** {total:.1f} min")
-
-        for l in legs:
-            st.write(f"{l['mode']} {l['route']} → {l['time']:.1f} min")
-
-# ----------------- Map -----------------
-with left:
-    if show_map and st.session_state.result:
-        legs = compress_legs(st.session_state.result["legs"])
-        first = legs[0]["from"]
-        start = G.nodes[first]
-
-        m = folium.Map(
-            location=[start["lat"], start["lon"]],
-            zoom_start=13,
-            tiles="CartoDB positron",
-        )
-
-        for l in legs:
-            u = G.nodes[l["from"]]
-            v = G.nodes[l["to"]]
-            mode = l["mode"].lower()
-
-            color = "#7f7f7f"
-            if "train" in mode:
-                color = "#2ca02c"
-            elif "bus" in mode:
-                color = "#1f77b4"
-            elif "jeep" in mode:
-                color = "#ff7f0e"
-
-            geom = None
-            if mode == "walk":
-                geom = osrm_geometry(u["lat"], u["lon"], v["lat"], v["lon"], "foot")
-            elif "jeep" in mode:
-                geom = osrm_geometry(u["lat"], u["lon"], v["lat"], v["lon"], "car")
-
-            if geom:
-                folium.PolyLine(geom, color=color, weight=4).add_to(m)
-            else:
-                folium.PolyLine(
-                    [(u["lat"], u["lon"]), (v["lat"], v["lon"])],
-                    color=color,
-                    weight=6,
-                ).add_to(m)
-
-        st_folium(m, width=900, height=650)
+G = build_full_graph(stops, routes, add_walk_links=True, walk_thresh_m=700)
 
